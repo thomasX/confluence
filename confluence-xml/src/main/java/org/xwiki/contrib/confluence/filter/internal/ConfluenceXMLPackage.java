@@ -114,6 +114,10 @@ public class ConfluenceXMLPackage
 
     public static final String KEY_PAGE_BODY_TYPE = "bodyType";
 
+    public static final String KEY_PAGE_LABELLINGS = "labellings";
+
+    public static final String KEY_PAGE_COMMENTS = "comments";
+
     /**
      * Old property to indicate attachment name.
      * 
@@ -188,6 +192,10 @@ public class ConfluenceXMLPackage
 
     public static final String KEY_ATTACHMENT_DTO = "imageDetailsDTO";
 
+    public static final String KEY_LABEL_NAME = "name";
+
+    public static final String KEY_LABELLING_LABEL = "label";
+
     public static final String KEY_GROUP_NAME = "name";
 
     public static final String KEY_GROUP_ACTIVE = "active";
@@ -221,8 +229,6 @@ public class ConfluenceXMLPackage
     public static final String KEY_USER_EMAIL = "emailAddress";
 
     public static final String KEY_USER_PASSWORD = "credential";
-    
-    public static final String KEY_LABELLING_CONTENT = "content";
 
     /**
      * 2012-03-07 17:16:48.158
@@ -239,13 +245,6 @@ public class ConfluenceXMLPackage
      * replacement to repair the CDATA
      */
     private static final String REPAIRED_CDATA_END = "]]";
-    
-    /**
-     * possible content types for labellings (CONTENT for pages, ATTACHMENT for attachments) 
-     */
-    private static final String LABELLING_CONTENT_TYPE_CONTENT = "CONTENT";
-    
-    private static final String LABELLING_CONTENT_TYPE_ATTACHMENT = "ATTACHMENT";
 
     private static final XMLInputFactory XML_INPUT_FACTORY = XMLInputFactory.newInstance();
 
@@ -302,7 +301,7 @@ public class ConfluenceXMLPackage
             try (FileInputStream stream = new FileInputStream(file)) {
                 fromStream(stream);
             } catch (IOException e) {
-                throw new XMLStreamException("Failed to read Confluence package in file [" + file + "]");
+                throw new XMLStreamException(String.format("Failed to read Confluence package in file [%s]", file), e);
             }
         }
     }
@@ -518,6 +517,8 @@ public class ConfluenceXMLPackage
                 readSpaceObject(xmlReader);
             } else if (type.equals("InternalUser")) {
                 readUserObject(xmlReader);
+            } else if (type.equals("ConfluenceUserImpl")) {
+                readUserImplObject(xmlReader);
             } else if (type.equals("InternalGroup")) {
                 readGroupObject(xmlReader);
             } else if (type.equals("HibernateMembership")) {
@@ -530,8 +531,6 @@ public class ConfluenceXMLPackage
                 readSpacePermissionObject(xmlReader);
             } else if (type.equals("Attachment")) {
                 readAttachmentObject(xmlReader);
-            } else if (type.equals("Labelling")) {
-                readLabellingObject(xmlReader);
             } else {
                 PropertiesConfiguration properties = newProperties();
 
@@ -572,6 +571,36 @@ public class ConfluenceXMLPackage
 
         return id;
     }
+    
+    private String readImplObjectProperties(XMLStreamReader xmlReader, PropertiesConfiguration properties)
+            throws XMLStreamException, FilterException
+        {
+            String id = "-1";
+
+            for (xmlReader.nextTag(); xmlReader.isStartElement(); xmlReader.nextTag()) {
+                String elementName = xmlReader.getLocalName();
+
+                if (elementName.equals("id")) {
+                    String idName = xmlReader.getAttributeValue(null, "name");
+
+                    if (idName != null && idName.equals("key")) {
+                        id = fixCData(xmlReader.getElementText());
+
+                        properties.setProperty("id", id);
+                    } else {
+                        StAXUtils.skipElement(xmlReader);
+                    }
+                } else if (elementName.equals("property") || elementName.equals("collection")) {
+                    String propertyName = xmlReader.getAttributeValue(null, "name");
+
+                    properties.setProperty(propertyName, readProperty(xmlReader));
+                } else {
+                    StAXUtils.skipElement(xmlReader);
+                }
+            }
+
+            return id;
+        }
 
     private void readAttachmentObject(XMLStreamReader xmlReader)
         throws XMLStreamException, FilterException, ConfigurationException
@@ -598,36 +627,6 @@ public class ConfluenceXMLPackage
 
         return pageId;
     }
-    
-    private void readLabellingObject(XMLStreamReader xmlReader)
-            throws XMLStreamException, FilterException, ConfigurationException
-        {
-            PropertiesConfiguration properties = newProperties();
-
-            long labellingId = readObjectProperties(xmlReader, properties);
-            
-            // check if the labelling connects the label to a page (labelabletype=CONTENT) or an attachment (labelabletype=ATTACHMENT)
-            
-            String contentType = properties.getString(KEY_LABELLING_CONTENT, null);
-            		
-            Long contentId = getLabellingContentId(properties);
-
-            if (contentId != null) {
-                // Save attachment
-                saveLabellingProperties(properties, contentId, contentType, labellingId);
-            }
-        }
-
-    private Long getLabellingContentId(PropertiesConfiguration properties)
-        {
-            Long pageId = getLong(properties, KEY_LABELLING_CONTENT, null);
-
-            if (pageId == null) {
-                pageId = properties.getLong(KEY_LABELLING_CONTENT, null);
-            }
-
-            return pageId;
-        }
 
     private void readSpaceObject(XMLStreamReader xmlReader)
         throws XMLStreamException, FilterException, ConfigurationException
@@ -727,6 +726,17 @@ public class ConfluenceXMLPackage
         // Save page
         saveObjectProperties("users", properties, pageId);
     }
+    
+    private void readUserImplObject(XMLStreamReader xmlReader)
+            throws XMLStreamException, ConfigurationException, FilterException
+    {
+        PropertiesConfiguration properties = newProperties();
+
+        String pageId = readImplObjectProperties(xmlReader, properties);
+
+        // Save page
+        saveObjectProperties("users", properties, pageId);
+    }
 
     private void readGroupObject(XMLStreamReader xmlReader)
         throws XMLStreamException, ConfigurationException, FilterException
@@ -789,6 +799,8 @@ public class ConfluenceXMLPackage
             || propertyClass.equals("InternalGroup") || propertyClass.equals("InternalUser")
             || propertyClass.equals("Comment") || propertyClass.equals("ContentProperty")) {
             return readObjectReference(xmlReader);
+        } else if (propertyClass.equals("ConfluenceUserImpl")) {
+            return readImplObjectReference(xmlReader);
         } else {
             StAXUtils.skipElement(xmlReader);
         }
@@ -823,6 +835,22 @@ public class ConfluenceXMLPackage
         xmlReader.nextTag();
 
         return id;
+    }
+    
+    private String readImplObjectReference(XMLStreamReader xmlReader) throws FilterException, XMLStreamException
+    {
+        xmlReader.nextTag();
+
+        if (!xmlReader.getLocalName().equals("id")) {
+            throw new FilterException(
+                String.format("Was expecting id element but found [%s]", xmlReader.getLocalName()));
+        }
+
+        String key = fixCData(xmlReader.getElementText());
+
+        xmlReader.nextTag();
+
+        return key;
     }
 
     private List<Object> readListProperty(XMLStreamReader xmlReader) throws XMLStreamException, FilterException
@@ -886,6 +914,11 @@ public class ConfluenceXMLPackage
     {
         return new File(getObjectsFolder(folderName), String.valueOf(objectId));
     }
+    
+    private File getObjectFolder(String folderName, String objectId)
+    {
+        return new File(getObjectsFolder(folderName), objectId);
+    }
 
     private File getPagePropertiesFile(long pageId)
     {
@@ -895,6 +928,13 @@ public class ConfluenceXMLPackage
     }
 
     private File getObjectPropertiesFile(String folderName, long propertyId)
+    {
+        File folder = getObjectFolder(folderName, propertyId);
+
+        return new File(folder, "properties.properties");
+    }
+    
+    private File getObjectPropertiesFile(String folderName, String propertyId)
     {
         File folder = getObjectFolder(folderName, propertyId);
 
@@ -926,15 +966,6 @@ public class ConfluenceXMLPackage
     {
         return new File(getPageFolder(pageId), "attachments");
     }
-    
-    private File getLabellingFolder(long contentId, String contentType)
-    {
-    	if (contentType.equals(LABELLING_CONTENT_TYPE_ATTACHMENT)) {
-    		return new File(getAttachmentsFolder(contentId), "labelling");
-    	} else {
-    		return new File(getPageFolder(contentId), "labelling");
-    	}
-    }
 
     private File getSpacePermissionsFolder(long spaceId)
     {
@@ -945,11 +976,6 @@ public class ConfluenceXMLPackage
     {
         return new File(getAttachmentsFolder(pageId), String.valueOf(attachmentId));
     }
-    
-    private File getLabellingFolder(long contentId, String contentType, long labellingId)
-    {
-        return new File(getLabellingFolder(contentId, contentType), String.valueOf(labellingId));
-    }
 
     private File getSpacePermissionFolder(long spaceId, long permissionId)
     {
@@ -959,13 +985,6 @@ public class ConfluenceXMLPackage
     private File getAttachmentPropertiesFile(long pageId, long attachmentId)
     {
         File folder = getAttachmentFolder(pageId, attachmentId);
-
-        return new File(folder, "properties.properties");
-    }
-    
-    private File getLabellingPropertiesFile(long contentId, String contentType, long labellingId)
-    {
-        File folder = getLabellingFolder(contentId, contentType, labellingId);
 
         return new File(folder, "properties.properties");
     }
@@ -1009,12 +1028,29 @@ public class ConfluenceXMLPackage
 
         return new PropertiesConfiguration(file);
     }
+    
+    public PropertiesConfiguration getObjectProperties(String folder, String objectId) throws ConfigurationException
+    {
+        if (objectId == null) {
+            return null;
+        }
+
+        File file = getObjectPropertiesFile(folder, objectId);
+
+        return new PropertiesConfiguration(file);
+    }
 
     public PropertiesConfiguration getUserProperties(Long userId) throws ConfigurationException
     {
         return getObjectProperties("users", userId);
     }
+    
+    public PropertiesConfiguration getUserProperties(String userId) throws ConfigurationException
+    {
+        return getObjectProperties("users", userId);
+    }
 
+    // will return users for old confluence format where users had ids representable as longs
     public Collection<Long> getUsers()
     {
         File folder = getUsersFolder();
@@ -1028,6 +1064,26 @@ public class ConfluenceXMLPackage
                 if (NumberUtils.isCreatable(userIdString)) {
                     users.add(Long.valueOf(userIdString));
                 }
+            }
+        } else {
+            users = Collections.emptyList();
+        }
+
+        return users;
+    }
+    
+    // will return users for new confluence format where users have keys which cannot be represented as longs
+    public Collection<String> getAllUsers()
+    {
+        File folder = getUsersFolder();
+
+        Collection<String> users;
+        if (folder.exists()) {
+            String[] userFolders = folder.list();
+
+            users = new TreeSet<>();
+            for (String userIdString : userFolders) {
+                users.add(userIdString);
             }
         } else {
             users = Collections.emptyList();
@@ -1065,13 +1121,6 @@ public class ConfluenceXMLPackage
     public PropertiesConfiguration getAttachmentProperties(long pageId, long attachmentId) throws ConfigurationException
     {
         File file = getAttachmentPropertiesFile(pageId, attachmentId);
-
-        return new PropertiesConfiguration(file);
-    }
-    
-    public PropertiesConfiguration getLabellingProperties(long contentId, String contentType, long labellingId) throws ConfigurationException
-    {
-        File file = getLabellingPropertiesFile(contentId, contentType, labellingId);
 
         return new PropertiesConfiguration(file);
     }
@@ -1114,21 +1163,21 @@ public class ConfluenceXMLPackage
 
         fileProperties.save();
     }
+    
+    private void saveObjectProperties(String folder, PropertiesConfiguration properties, String objectId)
+            throws ConfigurationException
+        {
+            PropertiesConfiguration fileProperties = getObjectProperties(folder, objectId);
+
+            fileProperties.copy(properties);
+
+            fileProperties.save();
+        }
 
     private void saveAttachmentProperties(PropertiesConfiguration properties, long pageId, long attachmentId)
         throws ConfigurationException
     {
         PropertiesConfiguration fileProperties = getAttachmentProperties(pageId, attachmentId);
-
-        fileProperties.copy(properties);
-
-        fileProperties.save();
-    }
-    
-    private void saveLabellingProperties(PropertiesConfiguration properties, long contentId, String contentType, long labellingId)
-            throws ConfigurationException
-    {
-        PropertiesConfiguration fileProperties = getLabellingProperties(contentId, contentType, labellingId);
 
         fileProperties.copy(properties);
 
@@ -1224,6 +1273,48 @@ public class ConfluenceXMLPackage
             getLong(attachmentProperties, ConfluenceXMLPackage.KEY_ATTACHMENT_ORIGINALVERSIONID, null);
         return originalRevisionId != null ? originalRevisionId
             : getLong(attachmentProperties, ConfluenceXMLPackage.KEY_ATTACHMENT_ORIGINALVERSION, def);
+    }
+    
+    public String getTagName(PropertiesConfiguration labellingProperties)
+    {
+        Long tagId = labellingProperties.getLong(ConfluenceXMLPackage.KEY_LABELLING_LABEL, null);
+        String tagName = tagId.toString();
+        
+        try {
+             PropertiesConfiguration labelProperties = getObjectProperties(tagId);
+             tagName = labelProperties.getString(ConfluenceXMLPackage.KEY_LABEL_NAME);
+        } catch (NumberFormatException | ConfigurationException e) {
+            LOGGER.warn("Unable to get tag name, using id instead.");
+        }
+
+        return tagName;
+    }
+    
+    public String getCommentText(PropertiesConfiguration commentProperties, Long commentId)
+    {
+        String commentText = commentId.toString();
+        try {
+            // BodyContent objects are stored in page properties under the content id
+            PropertiesConfiguration commentContent = getPageProperties(commentId, false);
+            commentText = commentContent.getString("body");
+        } catch (ConfigurationException e) {
+            LOGGER.warn("Unable to get comment text, using id instead.");
+        }
+
+        return commentText;
+    }
+    
+    public Integer getCommentBodyType(PropertiesConfiguration commentProperties, Long commentId)
+    {
+        Integer bodyType = -1;
+        try {
+            PropertiesConfiguration commentContent = getPageProperties(commentId, false);
+            bodyType = commentContent.getInt("bodyType");
+        } catch (ConfigurationException e) {
+            LOGGER.warn("Unable to get comment body type.");
+        }
+
+        return bodyType;
     }
 
     public Long getLong(PropertiesConfiguration properties, String key, Long def)
